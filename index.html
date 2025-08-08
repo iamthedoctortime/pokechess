@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pokémon Chess (Canvas)</title>
+<style>
+  body {
+    margin: 0;
+    background: #e0f7fa;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    user-select: none;
+  }
+  h1 {
+    color: #d32f2f;
+    margin: 20px 0 10px;
+    text-shadow: 2px 2px #1a237e;
+  }
+  #gameContainer {
+    position: relative;
+    width: 640px;
+    height: 640px;
+    border: 4px solid #1a237e;
+    border-radius: 15px;
+    box-shadow: 0 0 20px #d32f2f;
+    background: linear-gradient(135deg, #fce4ec 25%, #f8bbd0 25%, #f8bbd0 50%, #fce4ec 50%, #fce4ec 75%, #f8bbd0 75%, #f8bbd0 100%);
+    background-size: 128px 128px;
+  }
+  #chessboard {
+    background-color: transparent;
+    display: block;
+    margin: 0 auto;
+    cursor: pointer;
+  }
+  #status {
+    margin-top: 15px;
+    font-weight: bold;
+    font-size: 22px;
+    color: #1a237e;
+  }
+  #resetBtn {
+    margin-top: 15px;
+    padding: 10px 25px;
+    font-size: 18px;
+    border-radius: 10px;
+    background-color: #d32f2f;
+    color: white;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 5px 10px #9a0000;
+    transition: background-color 0.3s ease;
+  }
+  #resetBtn:hover {
+    background-color: #b71c1c;
+  }
+</style>
+</head>
+<body>
+  <h1>Pokémon Themed Chess</h1>
+  <div id="gameContainer">
+    <canvas id="chessboard" width="640" height="640"></canvas>
+  </div>
+  <div id="status">Loading...</div>
+  <button id="resetBtn">Restart Game</button>
+
+<script>
+// Pokémon sprites URLs for chess pieces
+// For demo purposes, using Pokémon icons from a reliable CDN (Pokémon icons from "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/")
+// We map piece types to Pokémon IDs for white and black teams.
+const POKEMON_PIECES = {
+  white: {
+    pawn:    {id: 172, name:"Pichu"},       // Pichu
+    rook:    {id: 95,  name:"Onix"},        // Onix
+    knight:  {id: 78,  name:"Rapidash"},    // Rapidash
+    bishop:  {id: 65,  name:"Alakazam"},    // Alakazam
+    queen:   {id: 6,   name:"Charizard"},   // Charizard
+    king:    {id: 150, name:"Mewtwo"}       // Mewtwo
+  },
+  black: {
+    pawn:    {id: 10,  name:"Caterpie"},    // Caterpie
+    rook:    {id: 208, name:"Steelix"},     // Steelix
+    knight:  {id: 78,  name:"Rapidash (D)"},// Rapidash (same sprite)
+    bishop:  {id: 282, name:"Gardevoir"},   // Gardevoir
+    queen:   {id: 6,   name:"Charizard (D)"},// Charizard (same sprite)
+    king:    {id: 150, name:"Mewtwo (D)"}   // Mewtwo (same sprite)
+  }
+};
+
+// Each Pokémon sprite URL (official art sprites from PokeAPI)
+function getPokemonSpriteUrl(id) {
+  // We'll use official artwork from pokeapi (simpler than animated sprites)
+  // Example: https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/6.png
+  return `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`;
+}
+
+// Board size and rendering constants
+const CANVAS_SIZE = 640;
+const ROWS = 8;
+const COLS = 8;
+const SQUARE_SIZE = CANVAS_SIZE / ROWS;
+
+// Colors for chessboard squares
+const LIGHT_SQUARE_COLOR = '#fde8e8'; // light pinkish
+const DARK_SQUARE_COLOR = '#d64848';  // dark red
+
+// Highlight colors
+const SELECTED_COLOR = 'rgba(255, 255, 255, 0.6)';
+const MOVE_HIGHLIGHT_COLOR = 'rgba(255, 255, 255, 0.3)';
+const CHECK_HIGHLIGHT_COLOR = 'rgba(255, 255, 0, 0.7)';
+
+// Canvas and context
+const canvas = document.getElementById('chessboard');
+const ctx = canvas.getContext('2d');
+
+// Status and reset button
+const statusEl = document.getElementById('status');
+const resetBtn = document.getElementById('resetBtn');
+
+// Game state variables
+let board = [];
+let turn = 'white';
+let selectedPiece = null;  // {row, col}
+let possibleMoves = [];    // array of {row, col}
+let images = {};           // loaded piece images cache
+let gameOver = false;
+let kingPositions = {white: null, black: null};
+
+// Preload images for all pieces for both teams
+function preloadImages() {
+  const promises = [];
+  for (const color of ['white','black']) {
+    for (const pieceType in POKEMON_PIECES[color]) {
+      const poke = POKEMON_PIECES[color][pieceType];
+      const url = getPokemonSpriteUrl(poke.id);
+      promises.push(new Promise((resolve) => {
+        const img = new Image();
+        img.src = url;
+        img.onload = () => {
+          images[`${color}_${pieceType}`] = img;
+          resolve();
+        };
+        img.onerror = () => {
+          console.warn(`Failed to load image: ${url}`);
+          resolve();
+        };
+      }));
+    }
+  }
+  return Promise.all(promises);
+}
+
+// Initialize the chessboard with pieces in starting position
+function initBoard() {
+  board = Array.from({length: ROWS}, () => Array(COLS).fill(null));
+
+  // Place pawns
+  for (let c=0; c<COLS; c++) {
+    board[1][c] = {type:'pawn', color:'black', hasMoved:false};
+    board[6][c] = {type:'pawn', color:'white', hasMoved:false};
+  }
+
+  // Place other pieces
+  const backRowOrder = ['rook','knight','bishop','queen','king','bishop','knight','rook'];
+
+  for (let c=0; c<COLS; c++) {
+    board[0][c] = {type: backRowOrder[c], color:'black', hasMoved:false};
+    board[7][c] = {type: backRowOrder[c], color:'white', hasMoved:false};
+  }
+
+  kingPositions.white = {row:7, col:4};
+  kingPositions.black = {row:0, col:4};
+
+  turn = 'white';
+  selectedPiece = null;
+  possibleMoves = [];
+  gameOver = false;
+  updateStatus();
+}
+
+// Draw the chessboard squares
+function drawBoard() {
+  for (let r=0; r<ROWS; r++) {
+    for (let c=0; c<COLS; c++) {
+      const x = c * SQUARE_SIZE;
+      const y = r * SQUARE_SIZE;
+      const isLight = (r + c) % 2 === 0;
+      ctx.fillStyle = isLight ? LIGHT_SQUARE_COLOR : DARK_SQUARE_COLOR;
+      ctx.fillRect(x, y, SQUARE_SIZE, SQUARE_SIZE);
+    }
+  }
+}
+
+// Highlight squares (for selected piece, moves, check)
+function highlightSquares() {
+  // Highlight selected piece square
+  if (selectedPiece) {
+    const {row, col} = selectedPiece;
+    ctx.fillStyle = SELECTED_COLOR;
+    ctx.fillRect(col * SQUARE_SIZE, row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE);
+  }
+  // Highlight possible moves squares
+  ctx.fillStyle = MOVE_HIGHLIGHT_COLOR;
+  for (const move of possibleMoves) {
+    ctx.beginPath();
+    const cx = move.col * SQUARE_SIZE + SQUARE_SIZE/2;
+    const cy = move.row * SQUARE_SIZE + SQUARE_SIZE/2;
+    const radius = SQUARE_SIZE / 6;
+    ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  // Highlight king in check (if any)
+  if (isInCheck(turn)) {
+    const kp = kingPositions[turn];
+    ctx.fillStyle = CHECK_HIGHLIGHT_COLOR;
+    ctx.fillRect(kp.col * SQUARE_SIZE, kp.row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE);
+  }
+}
+
+// Draw all pieces on the board
+function drawPieces() {
+  for (let r=0; r<ROWS; r++) {
+    for (let c=0; c<COLS; c++) {
+      const piece = board[r][c];
+      if (piece) {
+        const key = `${piece.color}_${piece.type}`;
+        const img = images[key];
+        if (img) {
+          // Draw piece image centered in square
+          const x = c * SQUARE_SIZE + SQUARE_SIZE/2;
+          const y = r * SQUARE_SIZE + SQUARE_SIZE/2;
+          const scale = 0.75; // scale down the image
+          const imgW = img.width * scale;
+          const imgH = img.height * scale;
+          ctx.drawImage(img, x - imgW/2, y - imgH/2, imgW, imgH);
+        } else {
+          // fallback text
+          ctx.fillStyle = piece.color === 'white' ? '#d32f2f' : '#1a237e';
+          ctx.font = '36px Arial';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(piece.type[0].toUpperCase(), c * SQUARE_SIZE + SQUARE_SIZE/2, r * SQUARE_SIZE + SQUARE_SIZE/2);
+        }
+      }
+    }
+  }
+}
+
+// Redraw entire board + pieces + highlights
+function render() {
+  ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+  drawBoard();
+  highlightSquares();
+  drawPieces();
+}
+
+// Convert pixel coordinates to board row/col
+function pixelToCell(x, y) {
+  const col = Math.floor(x / SQUARE_SIZE);
+  const row = Math.floor(y / SQUARE_SIZE);
+  if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return null;
+  return {row, col};
+}
+
+// Check if a cell is on the board
+function isOnBoard(row, col) {
+  return row >= 0 && row < ROWS && col >= 0 && col < COLS;
+}
+
+// Check if two colors are enemies
+function isEnemy(c1, c2) {
+  return c1 !== c2;
+}
+
+// Move validation functions for each piece type
+// Returns an array of valid moves for piece at (r,c)
+function getValidMoves(r, c, considerCheck=true) {
+  const piece = board[r][c];
+  if (!piece) return [];
+  const moves = [];
+
+  const directions = {
+    rook: [
+      {dr:1, dc:0}, {dr:-1, dc:0}, {dr:0, dc:1}, {dr:0, dc:-1}
+    ],
+    bishop: [
+      {dr:1, dc:1}, {dr:1, dc:-1}, {dr:-1, dc:1}, {dr:-1, dc:-1}
+    ],
+    queen: [
+      {dr:1, dc:0}, {dr:-1, dc:0}, {dr:0, dc:1}, {dr:0, dc:-1},
+      {dr:1, dc:1}, {dr:1, dc:-1}, {dr:-1, dc:1}, {dr:-1, dc:-1}
+    ],
+    knight: [
+      {dr:2, dc:1}, {dr:2, dc:-1}, {dr:-2, dc:1}, {dr:-2, dc:-1},
+      {dr:1, dc:2}, {dr:1, dc:-2}, {dr:-1, dc:2}, {dr:-1, dc:-2}
+    ],
+    king: [
+      {dr:1, dc:0}, {dr:-1, dc:0}, {dr:0, dc:1}, {dr:0, dc:-1},
+      {dr:1, dc:1}, {dr:1, dc:-1}, {dr:-1, dc:1}, {dr:-1, dc:-1}
+    ]
+  };
+
+  switch(piece.type) {
+    case 'pawn': {
+      const forward = piece.color === 'white' ? -1 : 1;
+      const startRow = piece.color === 'white' ? 6 : 1;
+      // Forward move 1 square
+      const f1 = r + forward;
+      if (isOnBoard(f1, c) && !board[f1][c]) {
+        moves.push({row: f1, col: c});
+        // Forward move 2 squares if in start position and no blocking piece
+        const f2 = r + 2*forward;
+        if (r === startRow && !board[f2][c]) {
+          moves.push({row: f2, col: c});
+        }
+      }
+      // Capture moves (diagonal)
+      for (const dc of [-1, 1]) {
+        const nr = r + forward;
+        const nc = c + dc;
+        if (isOnBoard(nr, nc) && board[nr][nc] && isEnemy(piece.color, board[nr][nc].color)) {
+          moves.push({row: nr, col: nc});
+        }
+      }
+      break;
+    }
+    case 'rook':
+    case 'bishop':
+    case 'queen': {
+      const dirs = directions[piece.type];
+      for (const dir of dirs) {
+        let nr = r + dir.dr;
+        let nc = c + dir.dc;
+        while (isOnBoard(nr,nc)) {
+          if (!board[nr][nc]) {
+            moves.push({row: nr, col: nc});
+          } else {
+            if (isEnemy(piece.color, board[nr][nc].color)) {
+              moves.push({row: nr, col: nc});
+            }
+            break;
+          }
+          nr += dir.dr;
+          nc += dir.dc;
+        }
+      }
+      break;
+    }
+    case 'knight': {
+      for (const move of directions.knight) {
+        const nr = r + move.dr;
+        const nc = c + move.dc;
+        if (isOnBoard(nr,nc)) {
+          if (!board[nr][nc] || isEnemy(piece.color, board[nr][nc].color)) {
+            moves.push({row: nr, col: nc});
+          }
+        }
+      }
+      break;
+    }
+    case 'king': {
+      for (const move of directions.king) {
+        const nr = r + move.dr;
+        const nc = c + move.dc;
+        if (isOnBoard(nr,nc)) {
+          if (!board[nr][nc] || isEnemy(piece.color, board[nr][nc].color)) {
+            moves.push({row: nr, col: nc});
+          }
+        }
+      }
+      // TODO: castling can be added later
+      break;
+    }
+  }
+
+  // Filter out moves that leave own king in check if considerCheck true
+  if (considerCheck) {
+    return moves.filter(move => {
+      const simulatedBoard = cloneBoard(board);
+      movePiece(simulatedBoard, r, c, move.row, move.col);
+      return !isKingInCheck(simulatedBoard, piece.color);
+    });
+  }
+
+  return moves;
+}
+
+// Clone board deeply
+function cloneBoard(bd) {
+  return bd.map(row => row.map(cell => {
+    if (!cell) return null;
+    return {...cell};
+  }));
+}
+
+// Move piece on board array (no validation)
+function movePiece(bd, r1, c1, r2, c2) {
+  bd[r2][c2] = bd[r1][c1];
+  bd[r1][c1] = null;
+
+  // Update hasMoved property
+  if (bd[r2][c2]) {
+    bd[r2][c2].hasMoved = true;
+  }
+}
+
+// Check if given color's king is in check on board bd
+function isKingInCheck(bd, color) {
+  // Find king
+  let kingPos = null;
+  for (let r=0; r<ROWS; r++) {
+    for (let c=0; c<COLS; c++) {
+      const piece = bd[r][c];
+      if (piece && piece.type === 'king' && piece.color === color) {
+        kingPos = {row: r, col: c};
+        break;
+      }
+    }
+    if (kingPos) break;
+  }
+  if (!kingPos) return true; // king missing = check?
+
+  // Check all enemy pieces if can attack king
+  for (let r=0; r<ROWS; r++) {
+    for (let c=0; c<COLS; c++) {
+      const piece = bd[r][c];
+      if (piece && piece.color !== color) {
+        const moves = getValidMovesForCheck(bd, r, c, piece);
+        if (moves.some(m => m.row === kingPos.row && m.col === kingPos.col)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// Variant of getValidMoves ignoring check filter (to detect threats to king)
+function getValidMovesForCheck(bd, r, c, piece) {
+  const moves = [];
+
+  const directions = {
+    rook: [
+      {dr:1, dc:0}, {dr:-1, dc:0}, {dr:0, dc:1}, {dr:0, dc:-1}
+    ],
+    bishop: [
+      {dr:1, dc:1}, {dr:1, dc:-1}, {dr:-1, dc:1}, {dr:-1, dc:-1}
+    ],
+    queen: [
+      {dr:1, dc:0}, {dr:-1, dc:0}, {dr:0, dc:1}, {dr:0, dc:-1},
+      {dr:1, dc:1}, {dr:1, dc:-1}, {dr:-1, dc:1}, {dr:-1, dc:-1}
+    ],
+    knight: [
+      {dr:2, dc:1}, {dr:2, dc:-1}, {dr:-2, dc:1}, {dr:-2, dc:-1},
+      {dr:1, dc:2}, {dr:1, dc:-2}, {dr:-1, dc:2}, {dr:-1, dc:-2}
+    ],
+    king: [
+      {dr:1, dc:0}, {dr:-1, dc:0}, {dr:0, dc:1}, {dr:0, dc:-1},
+      {dr:1, dc:1}, {dr:1, dc:-1}, {dr:-1, dc:1}, {dr:-1, dc:-1}
+    ]
+  };
+
+  switch(piece.type) {
+    case 'pawn': {
+      const forward = piece.color === 'white' ? -1 : 1;
+      // Only capture moves count for check
+      for (const dc of [-1, 1]) {
+        const nr = r + forward;
+        const nc = c + dc;
+        if (isOnBoard(nr, nc)) {
+          moves.push({row: nr, col: nc});
+        }
+      }
+      break;
+    }
+    case 'rook':
+    case 'bishop':
+    case 'queen': {
+      const dirs = directions[piece.type];
+      for (const dir of dirs) {
+        let nr = r + dir.dr;
+        let nc = c + dir.dc;
+        while (isOnBoard(nr,nc)) {
+          moves.push({row: nr, col: nc});
+          if (bd[nr][nc]) break; // blocked
+          nr += dir.dr;
+          nc += dir.dc;
+        }
+      }
+      break;
+    }
+    case 'knight': {
+      for (const move of directions.knight) {
+        const nr = r + move.dr;
+        const nc = c + move.dc;
+        if (isOnBoard(nr,nc)) {
+          moves.push({row: nr, col: nc});
+        }
+      }
+      break;
+    }
+    case 'king': {
+      for (const move of directions.king) {
+        const nr = r + move.dr;
+        const nc = c + move.dc;
+        if (isOnBoard(nr,nc)) {
+          moves.push({row: nr, col: nc});
+        }
+      }
+      break;
+    }
+  }
+  return moves;
+}
+
+// Check if current player is in check
+function isInCheck(color) {
+  return isKingInCheck(board, color);
+}
+
+// Check if player has any legal moves left (used for checkmate/stalemate)
+function hasAnyLegalMoves(color) {
+  for (let r=0; r<ROWS; r++) {
+    for (let c=0; c<COLS; c++) {
+      const piece = board[r][c];
+      if (piece && piece.color === color) {
+        const moves = getValidMoves(r,c);
+        if (moves.length > 0) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Update the status text based on game state
+function updateStatus() {
+  if (gameOver) return;
+  if (isInCheck(turn)) {
+    if (!hasAnyLegalMoves(turn)) {
+      statusEl.textContent = `${capitalize(turn)} is checkmated! Game Over.`;
+      gameOver = true;
+    } else {
+      statusEl.textContent = `${capitalize(turn)} is in CHECK! ${capitalize(opponent(turn))} to move.`;
+    }
+  } else {
+    if (!hasAnyLegalMoves(turn)) {
+      statusEl.textContent = `Stalemate! Game Over.`;
+      gameOver = true;
+    } else {
+      statusEl.textContent = `${capitalize(turn)}'s turn`;
+    }
+  }
+}
+
+// Helper: capitalize string
+function capitalize(str) {
+  return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+// Helper: get opponent color
+function opponent(color) {
+  return color === 'white' ? 'black' : 'white';
+}
+
+// Handle canvas clicks for selecting and moving pieces
+function onCanvasClick(evt) {
+  if (gameOver) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = evt.clientX - rect.left;
+  const y = evt.clientY - rect.top;
+
+  const cell = pixelToCell(x,y);
+  if (!cell) return;
+
+  const {row, col} = cell;
+  const clickedPiece = board[row][col];
+
+  if (selectedPiece) {
+    // If clicked a valid move square, move piece
+    if (possibleMoves.some(m => m.row === row && m.col === col)) {
+      moveSelectedPiece(row, col);
+      return;
+    }
+    // Clicking own piece again changes selection
+    if (clickedPiece && clickedPiece.color === turn) {
+      selectPiece(row, col);
+      return;
+    }
+    // Clicking elsewhere deselects
+    selectedPiece = null;
+    possibleMoves = [];
+    render();
+  } else {
+    // No selection yet
+    if (clickedPiece && clickedPiece.color === turn) {
+      selectPiece(row, col);
+    }
+  }
+}
+
+// Select a piece and highlight possible moves
+function selectPiece(row, col) {
+  selectedPiece = {row, col};
+  possibleMoves = getValidMoves(row, col);
+  render();
+}
+
+// Move selected piece to target square
+function moveSelectedPiece(destRow, destCol) {
+  if (!selectedPiece) return;
+  const {row: srcRow, col: srcCol} = selectedPiece;
+
+  // Execute move
+  const movingPiece = board[srcRow][srcCol];
+  board[destRow][destCol] = {...movingPiece, hasMoved:true};
+  board[srcRow][srcCol] = null;
+
+  // Update king position if king moved
+  if (movingPiece.type === 'king') {
+    kingPositions[movingPiece.color] = {row: destRow, col: destCol};
+  }
+
+  // Pawn promotion (simple: promote to queen automatically)
+  if (movingPiece.type === 'pawn') {
+    if ((movingPiece.color === 'white' && destRow === 0) || (movingPiece.color === 'black' && destRow === 7)) {
+      board[destRow][destCol].type = 'queen';
+    }
+  }
+
+  // Switch turn
+  turn = opponent(turn);
+  selectedPiece = null;
+  possibleMoves = [];
+  updateStatus();
+  render();
+}
+
+// Main game initialization
+async function main() {
+  statusEl.textContent = 'Loading Pokémon sprites...';
+  await preloadImages();
+  initBoard();
+  updateStatus();
+  render();
+}
+
+// Event listeners
+canvas.addEventListener('click', onCanvasClick);
+resetBtn.addEventListener('click', () => {
+  initBoard();
+  updateStatus();
+  render();
+});
+
+// Start the game
+main();
+</script>
+</body>
+</html>
